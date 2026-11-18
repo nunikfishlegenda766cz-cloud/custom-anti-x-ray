@@ -2,8 +2,8 @@ package com.example.antixray;
 
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.Sound;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -14,74 +14,90 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 public final class AntiXrayPlugin extends JavaPlugin implements Listener, CommandExecutor {
 
-    // Sleduje čas posledního vytěžení diamantu a počítá rychlost
-    private final Map<UUID, Long> lastDiamondTime = new HashMap<>();
-    private final Map<UUID, Integer> consecutiveDiamonds = new HashMap<>();
+    // Seznam bloků, které chceme před X-ray schovat (změnit na kámen)
+    private final Set<Material> targetOres = new HashSet<>();
+    // Pamatuje si pozice skrytých rud, které byly změněny na kámen
+    private final Set<String> disguisedBlocks = new HashSet<>();
 
     @Override
     public void onEnable() {
+        // Definujeme rudy, které budeme maskovat
+        targetOres.add(Material.DIAMOND_ORE);
+        targetOres.add(Material.DEEPSLATE_DIAMOND_ORE);
+        targetOres.add(Material.GOLD_ORE);
+        targetOres.add(Material.DEEPSLATE_GOLD_ORE);
+
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("antixray").setExecutor(this);
-        getLogger().info("AntiXrayPlugin byl úspěšně spuštěn!");
+
+        // Každou sekundu projdeme okolí hráčů a zamaskujeme rudy v dosahu X-ray
+        Bukkit.getScheduler().runTaskTimer(this, this::hideOresAroundPlayers, 0L, 20L);
+
+        getLogger().info("AntiXrayPlugin (Block Disguise) byl úspěšně spuštěn!");
     }
 
     @Override
     public void onDisable() {
-        lastDiamondTime.clear();
-        consecutiveDiamonds.clear();
+        disguisedBlocks.clear();
     }
 
-    @EventHandler
-    public void onBlockBreak(BlockBreakEvent event) {
-        Player player = event.getPlayer();
-        Block block = event.getBlock();
+    // Metoda pro skrytí rud v okolí hráče
+    private void hideOresAroundPlayers() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.hasPermission("antixray.bypass")) continue;
 
-        // Admini s právem mají výjimku (aby mohli zkoušet bedny/těžit bez omezení)
-        if (player.hasPermission("antixray.bypass")) {
-            return;
-        }
+            Location loc = player.getLocation();
+            int radius = 5; // Okruh bloků kolem hráče, kde se rudy schovají
 
-        // Sledujeme diamantové rudy
-        if (block.getType() == Material.DIAMOND_ORE || block.getType() == Material.DEEPSLATE_DIAMOND_ORE) {
-            UUID uuid = player.getUniqueId();
-            long currentTime = System.currentTimeMillis();
-            
-            long lastTime = lastDiamondTime.getOrDefault(uuid, 0L);
-            long diff = currentTime - lastTime;
-
-            // Pokud hráč vykope další diamant za méně než 1.5 sekundy (900 ms), je to podezřele rychlé (X-ray)
-            if (diff < 1500) {
-                int count = consecutiveDiamonds.getOrDefault(uuid, 0) + 1;
-                consecutiveDiamonds.put(uuid, count);
-
-                // Pokud to udělá 3x za sebou moc rychle, zablokujeme mu těžbu
-                if (count >= 3) {
-                    event.setCancelled(true); // Zruší vytěžení bloku!
-                    player.sendActionBar(ChatColor.RED + "⚠ Detekován X-ray! Těžíš příliš rychle.");
-                    player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
-
-                    // Upozorníme adminy v konzoli a ve hře
-                    String alert = ChatColor.RED + "[AntiXray] Hráč " + player.getName() + " byl zastaven při podezřelé těžbě diamantů!";
-                    getLogger().warning(alert);
-                    for (Player p : Bukkit.getOnlinePlayers()) {
-                        if (p.hasPermission("antixray.admin")) {
-                            p.sendMessage(alert);
+            for (int x = -radius; x <= radius; x++) {
+                for (int y = -radius; y <= radius; y++) {
+                    for (int z = -radius; z <= radius; z++) {
+                        Block block = loc.clone().add(x, y, z).getBlock();
+                        
+                        // Pokud je to ruda, pošleme hráči falešnou informaci / změníme ji na kámen,
+                        // pokud není odkrytá (má vedle sebe vzduch)
+                        if (targetOres.contains(block.getType())) {
+                            // Pro zjednodušení a výkon v jednom souboru: pokud je blok obklopen kamenem, zamaskujeme ho
+                            if (isSurroundedBySolid(block)) {
+                                String coordKey = block.getWorld().getName() + "," + block.getX() + "," + block.getY() + "," + block.getZ();
+                                
+                                // Změníme blok vizuálně pro hráče (nebo fyzicky na kámen, dokud se k němu nepřiblíží)
+                                // Tady pro ukázku pošleme blokchange přímo danému hráči, aby viděl kámen místo rudy!
+                                if (!disguisedBlocks.contains(coordKey)) {
+                                    player.sendBlockChange(block.getLocation(), Material.STONE.createBlockData());
+                                    disguisedBlocks.add(coordKey);
+                                }
+                            }
                         }
                     }
-                    return;
                 }
-            } else {
-                // Resetujeme počítadlo, pokud těží normální rychlostí
-                consecutiveDiamonds.put(uuid, 1);
             }
+        }
+    }
 
-            lastDiamondTime.put(uuid, currentTime);
+    // Pomocná metoda – zjistí, jestli je blok schovaný v zemi (nemá vedle sebe vzduch)
+    private boolean isSurroundedBySolid(Block block) {
+        return block.getRelative(0, 1, 0).getType().isOccluding() &&
+               block.getRelative(0, -1, 0).getType().isOccluding() &&
+               block.getRelative(1, 0, 0).getType().isOccluding() &&
+               block.getRelative(-1, 0, 0).getType().isOccluding();
+    }
+
+    // Když hráč kope, zkontrolujeme, jestli nekope do skryté rudy
+    @EventHandler
+    public void onBlockBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
+        String coordKey = block.getWorld().getName() + "," + block.getX() + "," + block.getY() + "," + block.getZ();
+
+        // Pokud to byla ruda, kterou jsme maskovali, vrátíme jí správný drop
+        if (targetOres.contains(block.getType())) {
+            disguisedBlocks.remove(coordKey);
         }
     }
 
@@ -93,7 +109,7 @@ public final class AntiXrayPlugin extends JavaPlugin implements Listener, Comman
         }
 
         sender.sendMessage(ChatColor.YELLOW + "--- AntiXrayPlugin ---");
-        sender.sendMessage(ChatColor.GREEN + "Plugin aktivně chrání server před rychlým X-ray těžením.");
+        sender.sendMessage(ChatColor.GREEN + "Maska rud (X-ray obfuscation) je aktivní!");
         return true;
     }
 }
