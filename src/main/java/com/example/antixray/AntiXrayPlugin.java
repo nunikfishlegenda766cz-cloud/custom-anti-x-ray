@@ -3,6 +3,7 @@ package com.example.antixray;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.Sound;
 import org.bukkit.block.Block;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -19,23 +20,21 @@ import java.util.UUID;
 
 public final class AntiXrayPlugin extends JavaPlugin implements Listener, CommandExecutor {
 
-    // Sleduje počet vytěžených diamantů za poslední dobu pro detekci X-ray
-    private final Map<UUID, Integer> diamondCounts = new HashMap<>();
+    // Sleduje čas posledního vytěžení diamantu a počítá rychlost
+    private final Map<UUID, Long> lastDiamondTime = new HashMap<>();
+    private final Map<UUID, Integer> consecutiveDiamonds = new HashMap<>();
 
     @Override
     public void onEnable() {
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("antixray").setExecutor(this);
-
-        // Každou minutu resetujeme počitadla, abychom sledovali rychlost těžby
-        Bukkit.getScheduler().runTaskTimer(this, diamondCounts::clear, 0L, 1200L);
-
         getLogger().info("AntiXrayPlugin byl úspěšně spuštěn!");
     }
 
     @Override
     public void onDisable() {
-        diamondCounts.clear();
+        lastDiamondTime.clear();
+        consecutiveDiamonds.clear();
     }
 
     @EventHandler
@@ -43,24 +42,46 @@ public final class AntiXrayPlugin extends JavaPlugin implements Listener, Comman
         Player player = event.getPlayer();
         Block block = event.getBlock();
 
-        // Sledujeme, když hráč vyteží diamantovou rudu
+        // Admini s právem mají výjimku (aby mohli zkoušet bedny/těžit bez omezení)
+        if (player.hasPermission("antixray.bypass")) {
+            return;
+        }
+
+        // Sledujeme diamantové rudy
         if (block.getType() == Material.DIAMOND_ORE || block.getType() == Material.DEEPSLATE_DIAMOND_ORE) {
             UUID uuid = player.getUniqueId();
-            int count = diamondCounts.getOrDefault(uuid, 0) + 1;
-            diamondCounts.put(uuid, count);
+            long currentTime = System.currentTimeMillis();
+            
+            long lastTime = lastDiamondTime.getOrDefault(uuid, 0L);
+            long diff = currentTime - lastTime;
 
-            // Pokud hráč vyteží podezřele hodně diamantů v krátkém čase, upozorní to adminy
-            if (count >= 5) {
-                String alertMessage = ChatColor.RED + "[AntiXray] Hráč " + player.getName() + " těží diamanty podezřele rychle! (" + count + "x)";
-                
-                // Pošleme upozornění všem adminům online
-                for (Player p : Bukkit.getOnlinePlayers()) {
-                    if (p.hasPermission("antixray.admin")) {
-                        p.sendMessage(alertMessage);
+            // Pokud hráč vykope další diamant za méně než 1.5 sekundy (900 ms), je to podezřele rychlé (X-ray)
+            if (diff < 1500) {
+                int count = consecutiveDiamonds.getOrDefault(uuid, 0) + 1;
+                consecutiveDiamonds.put(uuid, count);
+
+                // Pokud to udělá 3x za sebou moc rychle, zablokujeme mu těžbu
+                if (count >= 3) {
+                    event.setCancelled(true); // Zruší vytěžení bloku!
+                    player.sendActionBar(ChatColor.RED + "⚠ Detekován X-ray! Těžíš příliš rychle.");
+                    player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
+
+                    // Upozorníme adminy v konzoli a ve hře
+                    String alert = ChatColor.RED + "[AntiXray] Hráč " + player.getName() + " byl zastaven při podezřelé těžbě diamantů!";
+                    getLogger().warning(alert);
+                    for (Player p : Bukkit.getOnlinePlayers()) {
+                        if (p.hasPermission("antixray.admin")) {
+                            p.sendMessage(alert);
+                        }
                     }
+                    return;
                 }
-                getLogger().warning(alertMessage);
+            } else {
+                // Resetujeme počítadlo, pokud těží normální rychlostí
+                consecutiveDiamonds.put(uuid, 1);
             }
+
+            lastDiamondTime.put(uuid, currentTime);
         }
     }
 
@@ -72,7 +93,7 @@ public final class AntiXrayPlugin extends JavaPlugin implements Listener, Comman
         }
 
         sender.sendMessage(ChatColor.YELLOW + "--- AntiXrayPlugin ---");
-        sender.sendMessage(ChatColor.GREEN + "Plugin je aktivní a sleduje podezřelou těžbu diamantů.");
+        sender.sendMessage(ChatColor.GREEN + "Plugin aktivně chrání server před rychlým X-ray těžením.");
         return true;
     }
 }
