@@ -1,0 +1,30 @@
+name: Build AntiXrayPlugin
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Klonování repozitáře
+      uses: actions/checkout@v4
+
+    - name: Nastavení JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Build pomocí Mavenu
+      run: mvn clean package
+
+    - name: Nahrání artefaktu (.jar)
+      uses: actions/upload-artifact@v4
+      with:
+        name: AntiXrayPlugin-jar
+        path: target/AntiXrayPlugin-1.0-SNAPSHOT.jar
